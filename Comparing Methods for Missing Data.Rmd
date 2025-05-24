@@ -1,0 +1,586 @@
+---
+title: "Comparing Methods for missing data"
+author: 'Adam Hunt'
+date: "`r format(Sys.Date(), '%B %Y')`"
+output:
+  pdf_document:
+    number_sections: true
+    toc: true
+    toc_depth: 3
+    highlight: tango
+    latex_engine: xelatex
+  html_document:
+    toc: true
+    toc_depth: '3'
+    df_print: paged
+header-includes: \usepackage{booktabs}
+---
+
+
+```{r, include=FALSE}
+library(knitr)
+library(tibble)
+library(VIM)
+library(mice)
+library(naniar)
+library(GGally)
+library(corrplot)
+library(FactoMineR)
+library(effects)
+library(JointAI)
+library(ggplot2)
+library(missMDA)
+library(car)
+library(GGally)
+library(boot)
+library(ggeffects)
+library(gridExtra)
+library(ggpubr)
+library(cvTools)
+library(kableExtra)
+library(corrplot)
+library(broom)
+library(rjags) 
+library(dplyr)
+library(broom)
+library(tibble)
+```
+
+\newpage
+
+```{r}
+set.seed(123)
+```
+
+```{r}
+R <- read.csv("CHAIN.csv")
+```
+
+# Introduction
+
+```{r} 
+str(R)
+```
+
+# Exploratory data analysis
+ 
+## Univariate EDA 
+
+```{r}
+Plot = plot_all(R)
+print(Plot)
+```
+ 
+```{r}
+X = R
+X$income = log(X$income)
+Plot = plot_all(X)
+print(Plot)
+```
+
+## Bivariate or pariwise EDA
+
+### Target Variable Definition and Bivariate Boxplots
+
+```{r}
+# Create binary target variable
+HIVP <- as.numeric(R$log_virus > 0)
+```
+
+```{r}
+# Add HIVP to dataset
+R$HIVP <- HIVP
+```
+
+```{r}
+# Remove log_virus
+R$log_virus <- NULL
+```
+
+```{r}
+# Age vs HIVP
+boxplot(age ~ HIVP, data = R, main = "Age by HIV Status", xlab = "HIVP (1 = Detectable)", ylab = "Age")
+
+# Income vs HIVP
+boxplot(income ~ HIVP, data = R, main = "Income by HIV Status", xlab = "HIVP (1 = Detectable)", ylab = "Income")
+
+# Healthy vs HIVP
+boxplot(healthy ~ HIVP, data = R, main = "Physical Health by HIV Status", xlab = "HIVP (1 = Detectable)", ylab = "Health Score")
+
+# Damage vs HIVP
+boxplot(damage ~ HIVP, data = R, main = "CD4 Damage by HIV Status", xlab = "HIVP (1 = Detectable)", ylab = "Damage Level")
+```
+
+### Correlations
+
+```{r}
+# Compute the correlation matrix
+cor_matrix <- cor(R, use="pairwise.complete.obs")
+corrplot(cor_matrix, type="upper", method = "color", addCoef.col = "black")
+```
+
+### Scatterplots
+
+```{r}
+ggpairs(cc(R))
+```
+
+## Multivariate EDA
+
+```{r, fig.cap="Principal Component Analysis Table"}
+Paul <- PCA(cc(R), graph = FALSE)
+plot(Paul, choix = "var", axes = c(1, 2))  
+```
+
+\newpage 
+
+# The missingness 
+
+## The extent and distribution of the missingness
+
+```{r}
+sum(complete.cases(R))
+```
+
+ 
+```{r}
+miss_summary <- miss_var_summary(R)
+
+# Display the missing value summary as a table
+knitr::kable(miss_summary, caption = "Missing Value Summary for the Dataset")
+```
+
+```{r}
+OVERALLP=sum(is.na(R))/length(is.na(R))*100
+knitr::kable(OVERALLP,caption="Overall Missingness")
+```
+
+```{r}
+md.pattern(R)
+```
+
+```{r}
+md_pattern(R)
+```
+
+```{r}
+matrixplot(R,sortby="income")
+```
+
+## The mechanism of missingness
+
+```{r}
+# MCAR test
+mcar_result <- mcar_test(R)
+knitr::kable(mcar_result, caption = "MCAR Test Results for the Dataset")
+```
+
+### Model the missingness
+
+```{r}
+M <- as.numeric(is.na(R$HIVP))
+missing_model <- glm(M ~ age + healthy + mental + treatment + income, data = R, family = binomial)
+
+knitr::kable(summary(missing_model)$coefficients, caption = "Logistic Regression for Missing 'HIVP' Data")
+```
+```{r}
+M <- as.numeric(is.na(R$HIVP))
+missing_model2 <- glm(M ~ age + healthy + mental + treatment + income + damage, data = R, family = binomial)
+
+knitr::kable(summary(missing_model2)$coefficients, caption = "Logistic Regression for Missing 'HIVP' Data")
+```
+
+# Complete case analysis (CCA)
+
+```{r}
+cat("Complete cases:", sum(complete.cases(R)), "\nTotal rows:", nrow(R))
+```
+
+```{r}
+CC <- na.omit(R)
+```
+
+## Saturated Model
+
+```{r}
+# Saturated model
+LM_CC <- glm(HIVP ~ age + income + healthy + mental + damage + treatment,
+             data = CC, family = binomial)
+
+kable(summary(LM_CC)$coefficients, caption = "Saturated Model using CCA")
+```
+
+
+```{r}
+# Check multicollinearity
+vif_values <- vif(LM_CC)
+
+kable(as.data.frame(vif_values), caption = "VIF for Saturated Model")
+```
+
+## BIC-selected model
+
+```{r}
+# Stepwise model selection using BIC
+best_model_CCA <- step(LM_CC, direction = "both", k = log(nrow(CC)), trace = 0)
+
+kable(summary(best_model_CCA)$coefficients, caption = "BIC-selected Model using CCA")
+```
+
+```{r}
+# VIF for selected model
+vif_selected <- vif(best_model_CCA)
+
+kable(as.data.frame(vif_selected), caption = "VIF for BIC-selected Model")
+```
+
+## Effect plots
+
+```{r}
+# Effect plots
+all_effects <- allEffects(best_model_CCA)
+
+plot(all_effects)
+```
+
+## Cross-validation
+
+```{r}
+# Define misclassification error function
+cost_function <- function(r, pi = 0) mean(abs(r - (pi > 0.5)))
+
+# Cross-validation on BIC-selected model
+cv_result_bic <- cv.glm(data = CC, glmfit = best_model_CCA,
+                        cost = cost_function, K = 10)
+
+# Cross-validation on full model
+cv_result_full <- cv.glm(data = CC, glmfit = LM_CC,
+                         cost = cost_function, K = 10)
+
+# Display CV errors
+cv_errors <- data.frame(
+  Model = c("BIC-selected model", "Saturated model"),
+  CV_Error = round(c(cv_result_bic$delta[1], cv_result_full$delta[1]), 4),
+  Bias_Corrected = round(c(cv_result_bic$delta[2], cv_result_full$delta[2]), 4)
+)
+
+knitr::kable(cv_errors, caption = "10-Fold Cross-Validation Errors for CCA Models")
+```
+
+# Single Imputation
+
+## Stochastic
+
+```{r}
+## Single Imputation (stochastic) 
+meth        <- make.method(R) 
+meth["HIVP"]<- ""              
+
+MCE <- mice(R, m = 1, method = meth, print = FALSE)   # single SI
+COM <- complete(MCE)
+
+# Saturated logistic model
+LM_SI      <- glm(HIVP ~ ., data = COM, family = binomial)
+SUM_SI_SAT <- summary(LM_SI)$coefficients
+
+# Step-wise BIC model
+PM     <- step(LM_SI, k = log(nrow(COM)), trace = 0)
+SUM_SI <- summary(PM)$coefficients
+```
+
+```{r}
+kable(SUM_SI_SAT, caption = "Saturated Model Coefficients using SI")
+```
+
+```{r}
+kable(SUM_SI, caption = "Stepwise BIC Model Selection Coefficients using SI")
+```
+
+```{r}
+## Diagnostics stochastic SI
+# VIF
+vif_si  <- car::vif(PM)
+kable(data.frame(Variable = names(vif_si), VIF = vif_si),
+      caption = "VIF – BIC model (stochastic SI)")
+
+# Effect plots
+plot(allEffects(PM))
+```
+
+
+## Deterministic
+
+```{r}
+## Single Imputation (deterministic)
+meth_det            <- make.method(R)        
+meth_det["HIVP"]    <- ""                   
+meth_det[meth_det == "norm"] <- "norm.predict"
+
+MCE_det <- mice(R, m = 1, method = meth_det, print = FALSE)   # single SI
+COM_det <- complete(MCE_det)
+
+# Saturated logistic model
+LM_SI_DET      <- glm(HIVP ~ ., data = COM_det, family = binomial)
+SUM_SI_DET_SAT <- summary(LM_SI_DET)$coefficients
+
+# Step-wise BIC model
+PM_DET     <- step(LM_SI_DET, k = log(nrow(COM_det)), trace = 0)
+SUM_SI_DET <- summary(PM_DET)$coefficients
+```
+
+```{r}
+kable(SUM_SI_DET_SAT, caption = "Saturated Model Coefficients using deterministic SI")
+```
+
+```{r}
+kable(SUM_SI_DET, caption = "Stepwise BIC Model Selection Coefficients using deterministic SI")
+```
+
+```{r}
+## Diagnostics deterministic SI
+# VIF
+vif_det <- car::vif(PM_DET)
+kable(data.frame(Variable = names(vif_det), VIF = vif_det),
+      caption = "VIF – BIC model (deterministic SI)")
+
+# Effect plots
+plot(allEffects(PM_DET))
+```
+
+# Bayesian Imputation
+
+## Saturated Bayesian Logistic Model 
+
+```{r}
+JSAT <- glm_imp(
+  HIVP ~ age + income + healthy + mental + damage + treatment,
+  data            = R,
+  family          = binomial,
+  n.iter          = 2000,
+  n.adapt         = 1000,
+  thin            = 5,
+  monitor_params  = c(imps = TRUE)
+)
+
+GR_df <- as.data.frame(GR_crit(JSAT)[[1]])
+knitr::kable(GR_df,
+             caption = "Gelman–Rubin diagnostic values – saturated model")
+```
+
+```{r}
+knitr::kable(summary(JSAT)[[6]]$HIVP$regcoef,
+             caption = "Regression coefficients – saturated model")
+```
+
+## Reduced Model
+
+```{r}
+J1 <- glm_imp(
+  HIVP ~ age + income + damage + treatment,
+  data            = R,
+  auxvars         = ~ healthy + mental,   # auxiliary
+  family          = binomial,
+  n.iter          = 2000,
+  n.adapt         = 1000,
+  thin            = 5,
+  monitor_params  = c(imps = TRUE)
+)
+
+GR_df_J1 <- as.data.frame(GR_crit(J1)[[1]])
+knitr::kable(GR_df_J1,
+             caption = "Gelman-Rubin diagnostic values - reduced model")
+```
+
+```{r}
+knitr::kable(summary(J1)[[6]]$HIVP$regcoef,
+             caption = "Regression coefficients – reduced model")
+```
+
+## Convergence Visualisations 
+
+```{r}
+JointAI::traceplot(J1)
+```
+
+```{r}
+JointAI::densplot(J1)
+```
+
+## Model selection via DIC  
+
+```{r}
+get_DIC <- if (exists("DIC", where = asNamespace("JointAI"), inherits = FALSE)) {
+  JointAI:::DIC                          
+} else {
+  function(obj, n.iter = 2000) {        
+    ds <- rjags::dic.samples(obj$model, n.iter, type = "pD")
+    mean(ds$deviance + ds$penalty)
+  }
+}
+
+dic_tab <- data.frame(
+  Model = c("Saturated", "Reduced"),
+  DIC   = c(get_DIC(JSAT), get_DIC(J1))
+)
+
+knitr::kable(dic_tab,
+             caption = "Deviance Information Criterion")
+```
+
+# Multiple Imputation
+
+## Predictor Matrix
+
+```{r}
+M <- mice(R, m = 10, maxit = 10, print = FALSE)
+pred_matrix <- quickpred(R, mincor = 0.1)
+
+# Convert to a data frame
+pred_df <- as.data.frame(pred_matrix)
+
+knitr::kable(pred_df, caption = "Predictor Matrix (mincor = 0.1)")
+```
+
+## Pooled Full Model
+
+```{r}
+# Fit full logistic model across imputations
+mi_full <- with(M,
+  glm(HIVP ~ age + income + healthy + mental + damage + treatment,
+      family = binomial, data = R))
+
+# Pool results and extract estimate, SE, t-statistic, p-value
+pooled_full <- pool(mi_full)
+sum_full <- summary(pooled_full)[, c(1:3, 6)]
+knitr::kable(sum_full, caption = "Summary of Pooled Full Model")
+```
+
+## Convergence Diagnostics
+
+```{r}
+# Check that the chained equations have converged
+densityplot(M)   
+plot(M)        
+```
+
+## Reduced Model
+
+```{r}
+# Drop non-significant covariates to get parsimonious model
+mi_reduced <- with(M,
+  glm(HIVP ~ age + income + damage + treatment,
+      family = binomial, data = R))
+
+pooled_red <- pool(mi_reduced)
+sum_red <- summary(pooled_red)[, c(1:3, 6)]
+
+knitr::kable(sum_red, caption = "Summary of Pooled Reduced Model")
+```
+
+## Model Comparison
+
+```{r}
+# Model comparison via D1 across imputations
+D1_res <- D1(mi_full, mi_reduced)
+D1_df <- as.data.frame(D1_res$result)
+colnames(D1_df) <- c("test_statistic", "df1", "df2", "p_value", "r.v.i")
+
+knitr::kable(D1_df, caption = "D1 Test: Full vs Reduced Model")
+```
+
+# Conclusion
+
+```{r}
+# CCA (BIC-selected model)
+cca_tab <- tidy(best_model_CCA) %>%
+  select(term, estimate, std.error) %>%
+  mutate(method = "CCA")
+
+# Single imputation (deterministic SI and BIC model)
+si_tab <- tidy(PM_DET) %>%
+  select(term, estimate, std.error) %>%
+  mutate(method = "SI")
+
+# Bayesian 
+bayes_raw <- summary(J1)[[6]]$HIVP$regcoef
+bayes_tab <- as.data.frame(bayes_raw) %>%
+  rownames_to_column("term") %>%
+  rename(estimate = Mean, std.error = SD) %>%
+  select(term, estimate, std.error) %>%
+  mutate(method = "Bayesian")
+
+# Multiple imputation 
+mi_tab <- summary(pooled_red) %>%
+  select(term, estimate, std.error) %>%
+  mutate(method = "MI")
+
+# Combine and filter to key terms
+keep_terms <- c("(Intercept)", "age", "income", "damage", "treatment")
+comp_tab <- bind_rows(cca_tab, si_tab, bayes_tab, mi_tab) %>%
+  filter(term %in% keep_terms) %>%
+  arrange(term, method)
+
+knitr::kable(
+  comp_tab,
+  caption = "Comparison of Coefficients and Standard Errors Across Methods",
+  digits  = 3,
+  align   = c("l","r","r","l")
+)
+```
+
+```{r}
+# misclassification cost 
+cost_fn <- function(actual, pred_prob) {
+  mean(abs(actual - (pred_prob > 0.5)))
+}
+
+# CCA reduced (BIC-selected)
+dat_cca <- model.frame(best_model_CCA)
+cv_cca <- cv.glm(
+  data   = dat_cca,
+  glmfit = best_model_CCA,
+  cost   = cost_fn,
+  K      = 10
+)$delta[1]
+
+# SI reduced (deterministic and BIC-selected)
+dat_si <- model.frame(PM_DET)
+cv_si <- cv.glm(
+  data   = dat_si,
+  glmfit = PM_DET,
+  cost   = cost_fn,
+  K      = 10
+)$delta[1]
+
+# MI reduced
+m        <- M$m            
+cv_vals  <- numeric(m)
+for(i in seq_len(m)) {
+  d_i         <- complete(M, action = i)
+  fit_i       <- glm(HIVP ~ age + income + damage + treatment,
+                     data = d_i, family = binomial)
+  cv_vals[i]  <- cv.glm(d_i, fit_i, cost_fn, K = 10)$delta[1]
+}
+cv_mi <- mean(cv_vals)
+
+# Bayesian reduced 
+dat_bayes <- na.omit(R[, c("HIVP","age","income","damage","treatment")])
+coefs     <- summary(J1)[[6]]$HIVP$regcoef[,"Mean"]
+Xb        <- model.matrix(~ age + income + damage + treatment, data = dat_bayes)
+p_hat     <- plogis(Xb %*% coefs)
+cv_bayes  <- mean(abs(dat_bayes$HIVP - (p_hat > 0.5)))
+
+# Summarise
+cv_summary <- data.frame(
+  Method   = c("CCA", "SI", "MI", "Bayesian"),
+  CV_Error = c(cv_cca, cv_si, cv_mi, cv_bayes)
+)
+
+knitr::kable(
+  cv_summary,
+  digits  = 3,
+  caption = "10-Fold CV Misclassification Rate for Reduced Models"
+)
+```
+
+
