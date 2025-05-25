@@ -30,4 +30,4 @@ rmarkdown::render(
   "Comparing Methods for Missing Data.Rmd",
   output_dir = "docs"
 )
-# knitted report appears at docs/Comparing-Methods-for-Missing-Data.pdf
+# knitted report appears at docs/Comparing-Methods-for-Missing-Data.pdf or at this link https://github.com/adamlewis-97/Comparing-Methods-for-Missing-Data/raw/main/docs/Comparing-Methods-for-Missing-Data.pdf
